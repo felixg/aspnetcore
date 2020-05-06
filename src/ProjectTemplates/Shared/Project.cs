@@ -7,7 +7,6 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
-using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Internal;
 using Microsoft.Extensions.CommandLineUtils;
@@ -15,11 +14,12 @@ using Microsoft.Extensions.Logging;
 using Xunit;
 using Xunit.Abstractions;
 using Xunit.Sdk;
+using static Templates.Test.Helpers.ProcessLock;
 
 namespace Templates.Test.Helpers
 {
     [DebuggerDisplay("{ToString(),nq}")]
-    public class Project
+    public class Project : IDisposable
     {
         private const string _urls = "http://127.0.0.1:0;https://127.0.0.1:0";
 
@@ -33,8 +33,6 @@ namespace Templates.Test.Helpers
                 .Value
             : Environment.GetEnvironmentVariable("DotNetEfFullPath");
 
-        public SemaphoreSlim DotNetNewLock { get; set; }
-        public SemaphoreSlim NodeLock { get; set; }
         public string ProjectName { get; set; }
         public string ProjectArguments { get; set; }
         public string ProjectGuid { get; set; }
@@ -47,7 +45,7 @@ namespace Templates.Test.Helpers
         public ITestOutputHelper Output { get; set; }
         public IMessageSink DiagnosticsMessageSink { get; set; }
 
-        internal async Task<ProcessEx> RunDotNetNewAsync(
+        internal async Task<ProcessResult> RunDotNetNewAsync(
             string templateName,
             string auth = null,
             string language = null,
@@ -100,9 +98,9 @@ namespace Templates.Test.Helpers
             await DotNetNewLock.WaitAsync();
             try
             {
-                var execution = ProcessEx.Run(Output, AppContext.BaseDirectory, DotNetMuxer.MuxerPathOrDefault(), argString, environmentVariables);
+                using var execution = ProcessEx.Run(Output, AppContext.BaseDirectory, DotNetMuxer.MuxerPathOrDefault(), argString, environmentVariables);
                 await execution.Exited;
-                return execution;
+                return new ProcessResult(execution);
             }
             finally
             {
@@ -110,7 +108,7 @@ namespace Templates.Test.Helpers
             }
         }
 
-        internal async Task<ProcessEx> RunDotNetPublishAsync(bool takeNodeLock = false, IDictionary<string, string> packageOptions = null, string additionalArgs = null)
+        internal async Task<ProcessResult> RunDotNetPublishAsync(bool takeNodeLock = false, IDictionary<string, string> packageOptions = null, string additionalArgs = null)
         {
             Output.WriteLine("Publishing ASP.NET application...");
 
@@ -121,10 +119,10 @@ namespace Templates.Test.Helpers
             await effectiveLock.WaitAsync();
             try
             {
-                var result = ProcessEx.Run(Output, TemplateOutputDir, DotNetMuxer.MuxerPathOrDefault(), $"publish -c Release /bl {additionalArgs}", packageOptions);
+                using var result = ProcessEx.Run(Output, TemplateOutputDir, DotNetMuxer.MuxerPathOrDefault(), $"publish -c Release /bl {additionalArgs}", packageOptions);
                 await result.Exited;
                 CaptureBinLogOnFailure(result);
-                return result;
+                return new ProcessResult(result);
             }
             finally
             {
@@ -132,7 +130,7 @@ namespace Templates.Test.Helpers
             }
         }
 
-        internal async Task<ProcessEx> RunDotNetBuildAsync(bool takeNodeLock = false, IDictionary<string, string> packageOptions = null, string additionalArgs = null)
+        internal async Task<ProcessResult> RunDotNetBuildAsync(bool takeNodeLock = false, IDictionary<string, string> packageOptions = null, string additionalArgs = null)
         {
             Output.WriteLine("Building ASP.NET application...");
 
@@ -143,10 +141,10 @@ namespace Templates.Test.Helpers
             await effectiveLock.WaitAsync();
             try
             {
-                var result = ProcessEx.Run(Output, TemplateOutputDir, DotNetMuxer.MuxerPathOrDefault(), $"build -c Debug /bl {additionalArgs}", packageOptions);
+                using var result = ProcessEx.Run(Output, TemplateOutputDir, DotNetMuxer.MuxerPathOrDefault(), $"build -c Debug /bl {additionalArgs}", packageOptions);
                 await result.Exited;
                 CaptureBinLogOnFailure(result);
-                return result;
+                return new ProcessResult(result);
             }
             finally
             {
@@ -185,7 +183,7 @@ namespace Templates.Test.Helpers
             return new AspNetProcess(Output, TemplatePublishDir, projectDll, environment, hasListeningUri: hasListeningUri);
         }
 
-        internal async Task<ProcessEx> RunDotNetEfCreateMigrationAsync(string migrationName)
+        internal async Task<ProcessResult> RunDotNetEfCreateMigrationAsync(string migrationName)
         {
             var args = $"--verbose --no-build migrations add {migrationName}";
 
@@ -204,9 +202,9 @@ namespace Templates.Test.Helpers
                     command = "dotnet-ef";
                 }
 
-                var result = ProcessEx.Run(Output, TemplateOutputDir, command, args);
+                using var result = ProcessEx.Run(Output, TemplateOutputDir, command, args);
                 await result.Exited;
-                return result;
+                return new ProcessResult(result);
             }
             finally
             {
@@ -320,14 +318,14 @@ namespace Templates.Test.Helpers
             private bool _nodeLockTaken;
             private bool _dotNetLockTaken;
 
-            public OrderedLock(SemaphoreSlim nodeLock, SemaphoreSlim dotnetLock)
+            public OrderedLock(ProcessLock nodeLock, ProcessLock dotnetLock)
             {
                 NodeLock = nodeLock;
                 DotnetLock = dotnetLock;
             }
 
-            public SemaphoreSlim NodeLock { get; }
-            public SemaphoreSlim DotnetLock { get; }
+            public ProcessLock NodeLock { get; }
+            public ProcessLock DotnetLock { get; }
 
             public async Task WaitAsync()
             {
